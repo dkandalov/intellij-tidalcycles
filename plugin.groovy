@@ -67,9 +67,6 @@ class TidalProcess {
 
 	def writeLine(String line) {
 		try {
-			// GHCI treats \r as new line and \n as the end of the command,
-			// therefore, treating single \n as a newline and \n\n as the end of the command.
-			line = line.replace("\n", "\r").replace("\r\r", "\n") //
 			ghciWriter.write(line + "\n")
 			ghciWriter.flush()
 		} catch (Exception e) {
@@ -118,26 +115,38 @@ registerAction("StartOrStopTidal") {
 }
 
 def isBlank(String s) {
-	s.isEmpty() || s.isAllWhitespace()
+	s == null || s.isEmpty() || s.isAllWhitespace()
 }
 
-def selectedText(Editor editor, TextRange textRange) {
+def textFrom(TextRange textRange, Editor editor) {
 	def text = editor.document.getText(textRange).trim()
 	if (isBlank(text)) null else text
 }
 
-registerAction("MessageTidal", "ctrl M") { AnActionEvent event ->
-	def editor = currentEditorIn(event.project)
+def selectionRange(Editor editor) {
+	new TextRange(editor.selectionModel.selectionStart, editor.selectionModel.selectionEnd)
+}
 
-	def textRange = new TextRange(editor.selectionModel.selectionStart, editor.selectionModel.selectionEnd)
-	def text = selectedText(editor, textRange)
-	if (text == null) {
-		def line = editor.caretModel.logicalPosition.line
-		textRange = new TextRange(editor.document.getLineStartOffset(line), editor.document.getLineEndOffset(line))
-		text = selectedText(editor, textRange)
-	}
-	if (isBlank(text)) return
+def currentLineRange(Editor editor) {
+	def line = editor.caretModel.logicalPosition.line
+	new TextRange(editor.document.getLineStartOffset(line), editor.document.getLineEndOffset(line))
+}
 
+def currentParagraphRange(Editor editor) {
+	def currentLine = editor.caretModel.logicalPosition.line
+	def lines = editor.document.text.split("\n", -1)
+	def lastLine = lines.size() - 1
+	if (lines[currentLine].isEmpty()) return new TextRange(0, 0)
+
+	def fromLine = (0..currentLine).reverse().find { lines[it].isEmpty() } ?: 0
+	def toLine = (currentLine..lastLine).find { lines[it].isEmpty() } ?: lastLine
+
+	if (lines[fromLine].isEmpty() && fromLine < lastLine) fromLine++
+
+	new TextRange(editor.document.getLineStartOffset(fromLine), editor.document.getLineEndOffset(toLine))
+}
+
+def highlight(TextRange textRange, Editor editor) {
 	def textAttributes = new TextAttributes().with {
 		it.setBackgroundColor(lightGray)
 		it
@@ -146,8 +155,42 @@ registerAction("MessageTidal", "ctrl M") { AnActionEvent event ->
 	JobScheduler.scheduler.schedule({
 		invokeOnEDT { editor.markupModel.removeHighlighter(highlighter) }
 	}, 200, MILLISECONDS)
+}
 
-	getGlobalVar("tidalProcess")?.writeLine(text.replace("\t", "  "))
+registerAction("SendLineToTidal", "ctrl L") { AnActionEvent event ->
+	def editor = currentEditorIn(event.project)
+
+	def textRange = selectionRange(editor)
+	def text = textFrom(textRange, editor)
+	if (text == null) {
+		textRange = currentLineRange(editor)
+		text = textFrom(textRange, editor)
+	}
+	if (isBlank(text)) return
+
+	highlight(textRange, editor)
+
+	def tidal = getGlobalVar("tidalProcess")
+	text = text.replace("\t", "  ").replaceAll("\n +", "\r  ")
+	text.split("\n").each {
+		tidal?.writeLine(it)
+	}   
+}
+
+registerAction("SendParagraphToTidal", "ctrl K") { AnActionEvent event ->
+	def editor = currentEditorIn(event.project)
+
+	def textRange = currentParagraphRange(editor)
+	text = textFrom(textRange, editor)
+	if (isBlank(text)) return
+
+	highlight(textRange, editor)
+
+	def tidal = getGlobalVar("tidalProcess")
+	text = text.replace("\t", "  ").replaceAll("\n +", "\r  ")
+	text.split("\n").each {
+		tidal?.writeLine(it)
+	}   
 }
 
 registerAction("HushTidal", "ctrl H") { AnActionEvent event ->
